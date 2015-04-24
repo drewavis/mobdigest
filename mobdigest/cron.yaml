@@ -1,0 +1,5 @@
+cron:
+- description: weekly summay job
+  url: /report/stats
+  schedule: every sunday 23:55
+  timezone: Canada/Eastern

@@ -1,0 +1,4 @@
+*.project
+pyMobDigest/client_secret.json
+*.pydevproject
+pyMobDigest/gmail.storage
