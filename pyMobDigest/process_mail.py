@@ -6,6 +6,7 @@ import email
 import re
 import os
 import sys
+import json
 
 
 from apiclient import discovery
@@ -36,8 +37,7 @@ CLIENT_SECRET_FILE = 'client_secret.json'
 SCOPES = 'https://www.googleapis.com/auth/gmail.modify'
 
 APPLICATION_NAME = 'mobdigest'
-FROM = 'drew.avis@gmail.com'
-TO = 'brewers@lists.barleyment.ca'
+
 
 def get_credentials():
     """Gets valid user credentials from storage.
@@ -73,6 +73,12 @@ def get_credentials():
 def main():
   # re for pottymouth score: 
   badwords = r'fuck|shit|piss|damn|dick|cunt' 
+
+  with open ('mobdigest.config') as cfg_file:
+    config = json.load(cfg_file)
+
+  FROM = config["from"]
+  TO = config["to"]
 
   credentials = get_credentials()
   http = credentials.authorize(httplib2.Http())
