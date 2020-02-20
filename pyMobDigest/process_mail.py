@@ -7,13 +7,14 @@ import re
 import os
 import sys
 import json
+import pprint
 
 
 from apiclient import discovery
 import oauth2client
 from oauth2client import client
 from oauth2client import tools
-
+from oauth2client import file
 from datetime import date, timedelta, datetime
 from collections import Counter
 
@@ -21,6 +22,8 @@ from email.utils import parsedate_tz, mktime_tz
 from time import mktime
 from email.mime.text import MIMEText
 from apiclient import errors
+
+from untangle import untangle, original_text
 
 try:
     import argparse
@@ -39,6 +42,11 @@ SCOPES = 'https://www.googleapis.com/auth/gmail.modify'
 APPLICATION_NAME = 'mobdigest'
 
 
+# dict of original msg ID: [int count of replies, subject] to find longest
+threads = {}
+new_threads = 0
+
+
 def get_credentials():
     """Gets valid user credentials from storage.
 
@@ -54,8 +62,8 @@ def get_credentials():
     if not os.path.exists(credential_dir):
         os.makedirs(credential_dir)
     credential_path = os.path.join(credential_dir,
-                                     'gmail-python-quickstart.json')
-    print credential_path
+                                     'client_secret.json')
+    print (credential_path)
 
     store = oauth2client.file.Storage(credential_path)
     credentials = store.get()
@@ -68,6 +76,32 @@ def get_credentials():
             credentials = tools.run(flow, store)
         debug('Storing credentials to ' + credential_path)
     return credentials
+
+def save_msgs(gmail_service, msgs):
+  msgs_data = []
+  global threads, new_threads
+
+  for m in msgs:
+    msg = GetMimeMessage(gmail_service,'me',m['id'])
+    msgs_data.append(msg)
+    # debug (msg.keys())
+
+    # don't count Mobstats thread
+    if '[MobStats]' in msg['Subject']:
+      continue
+    # have to do threading logic here:
+    # new threads have no "in reply to"
+
+    thread_id = m['threadId']
+    if not threads.has_key(thread_id) :
+        new_threads += 1   
+        threads[thread_id] = [1, msg['Subject']]
+        
+    else:
+         threads[thread_id][0] += 1
+
+  # at this point we could save via pickle if we wanted all the data...
+  return msgs_data
 
 
 def main():
@@ -88,22 +122,25 @@ def main():
 
   # Some global counters
   ot_messages = 0
-  new_threads = 0
-  festa = 0
+
+  festas = 0
   proper_disposal = 0
   wtf = 0
   plus_one = 0
   unsbu = 0
+  fails = 0
+  humidifiers = 0
   shortest = 1000
   longest = 0
   total_len = 0
   total_messages = 0
 
   # set up dicts for processing:
+  global new_threads, threads
+
   # dict of poster email: [# of messages, pottymouth score, untrimmed messages]
   posters = {}
-  # dict of original msg ID: [int count of replies, subject] to find longest
-  threads = {}
+
   # links - a dict of 'type' : [array of urls]
   links = {}
     
@@ -136,25 +173,34 @@ def main():
   if 'messages' in response:
     msgs.extend(response['messages'])
   else:
-    print 'NO MESSAGES!'
+    print ('NO MESSAGES!')
     sys.exit()
   pg=0
+
   while 'nextPageToken' in response:
+  #while False:
     pg+=1
     debug('getting next page...' + str(pg))
     page_token = response['nextPageToken']
     response = gmail_service.users().messages().list(userId='me',labelIds=label_ids,q=qry,pageToken=page_token).execute()
-    msgs.extend(response['messages'])
+    if 'messages' in response:
+      msgs.extend(response['messages'])
+
+
 
   debug ('# messages: ' + str(len(msgs)))
   total_messages = len(msgs)
-  for m in msgs:
-    msg = GetMimeMessage(gmail_service,'me',m['id'])
 
-    # debug (msg.keys())
+  msg_list = save_msgs(gmail_service, msgs)
+  # Cache msgs for debugging:
+  with open('./cache/msgid_cache.json', 'w') as cache_file:
+      json.dump(msg_list, cache_file)
 
-    #for s in ['Subject', 'Sender', 'From', 'Date']:
-    #  debug ("%s: %s" % (s, msg[s]))
+  for i, msg in enumerate(msg_list):
+      print('{0:4.1f}% processed'.format ((i/total_messages)*100))
+    # print (msg.keys())
+    with open open('./cache/msgs_cache.json', 'a+') as msg_cache:
+        msg_cache.write(msg)
 
     # ignore all mobstats
     if '[MoBStats]' in msg['Subject']:
@@ -172,6 +218,13 @@ def main():
 
     # debug(msg_body)
 
+    # we need to get just msg text
+    processed_text = untangle(msg_body)
+    msg_text = " ".join(original_text(processed_text, 'ORIG'))
+    debug ('just the text: \n'+msg_text)
+
+    # at this point, msg_body is all text in the msg, msg_text should be just the new content
+
     in_group_buy = 0
 
     # count sender
@@ -181,23 +234,31 @@ def main():
         posters[msg['From']] = [1, 0, 0]
 
     # calc pottymouth score:
-    potty = re.findall(badwords, msg_body, re.I)
+    potty = re.findall(badwords, msg_text, re.I)
     if len(potty) > 0:
         posters[msg['From']][1] += len(potty)
+        debug ("potty:")
+        debug (msg_body)
 
     # find offers for various phrases:
-    disposals = re.findall(r'(proper disposal)', msg_body, re.I)
+    disposals = re.findall(r'(proper disposal)', msg_text, re.I)
     proper_disposal += len(disposals)
-    wtfs = re.findall(r'(wtf)', msg_body, re.I)
+    wtfs = re.findall(r'(wtf)', msg_text, re.I)
     wtf += len(wtfs)
-    plus_ones = re.findall(r'(\+1)', msg_body, re.I)        
+    plus_ones = re.findall(r'(\+1)', msg_text, re.I)        
     plus_one += len(plus_ones)
-    unsbus = re.findall(r'(unsbu)', msg_body, re.I)
+    unsbus = re.findall(r'(unsbu)', msg_text, re.I)
     unsbu += len (unsbus)
-    festas = re.findall(r'(festa)', msg_body, re.I)
+    festa_count = re.findall(r'(festa)', msg_text, re.I)
+    festas += len(festa_count)
+    humifier_count = re.findall(r'(humidifier)',msg_text,re.I)
+    humidifiers += len(humifier_count)
+    if 'offlist' in msg['Subject'].lower():
+      fail_count = re.findall(r'(fail)',msg_text, re.I)
+      fails += len(fail_count)
 
     # message lengths
-    msg_word_count = len(msg_body.split())
+    msg_word_count = len(msg_text.split())
     if msg_word_count > longest:
         longest = msg_word_count
     if msg_word_count < shortest:
@@ -219,7 +280,7 @@ def main():
     time_freq[time_hour] += 1
 
     # look for links:    
-    msg_links = re.findall(r'(https?://[^\s^>]+)', msg_body)
+    msg_links = re.findall(r'(https?://[^\s^>]+)', msg_text)
     for link in msg_links:
         if 'lists.barleyment.ca' in link or len(link) > 60:
             continue
@@ -263,17 +324,11 @@ def main():
     if any(w in msg['Subject'][:15].lower() for w in ot_words): 
         ot_messages += 1 
         
-    # new threads have no "in reply to"
-    thread_id = m['threadId']
-    if not threads.has_key(thread_id) :
-        new_threads += 1   
-        threads[thread_id] = [1, msg['Subject']]
-        
-    else:
-         threads[thread_id][0] += 1
+
                 
     # look for new sigs
     # NOTE: tried using untangle, doesn't seem to currently work
+    # looking in msg_body, not msg_text
         
     sigs = re.findall(r'_{40}\s+(.*?)\s+Brewers\s+mailing\s+list', msg_body, re.DOTALL)      
     for sig in sigs:            
@@ -310,7 +365,9 @@ def main():
   stats += "WTFs: {0}\n".format(wtf)       
   stats += "+1's: {0}\n".format(plus_one)     
   stats += "unsbus: {0}\n".format(unsbu)  
-  stats += "Festas: {0}\n".format(festa)
+  stats += "Festas: {0}\n".format(festas)
+  stats += "Offlist fails: {0}\n".format(fails)
+  stats += "Humidifiers: {0}\n".format(humidifiers)
 
   
   if len(new_subs) > 0:
@@ -413,7 +470,7 @@ def main():
       sorted_links = sorted(links['Brewing'])
       for item in sorted_links:
           stats += "  {0}\n".format(item)
-  print stats
+  print (stats)
 
   stats = 'Dear ' + TO + ', here are some stats from the last 7 days of MoB postings.\n\n' + stats
 
@@ -427,7 +484,7 @@ def GetMimeMessage(service, user_id, msg_id):
   try:
     message = service.users().messages().get(userId=user_id, id=msg_id,
                                              format='raw').execute()
-    # print 'Message snippet: %s' % message['snippet']
+    # print ('Message snippet: %s' % message['snippet'])
 
     msg_str = base64.urlsafe_b64decode(message['raw'].encode('ASCII'))
     mime_msg = email.message_from_string(msg_str)
@@ -435,7 +492,7 @@ def GetMimeMessage(service, user_id, msg_id):
     return mime_msg
 
   except errors.HttpError, error:
-    print 'An error occurred: %s' % error
+    print ('An error occurred: %s' % error)
 
 def makeGraph(keys_array, data_dict):
     # take a dict of values, and create an ascii graph, using the sorted keys array
@@ -460,7 +517,7 @@ def makeGraph(keys_array, data_dict):
 
 def debug(msg):
   if DEBUG:
-    print msg
+    print (msg)
 
 # also from google docs: https://developers.google.com/gmail/api/v1/reference/users/messages/send#examples
 def SendMessage(service, user_id, message):
@@ -478,10 +535,10 @@ def SendMessage(service, user_id, message):
   try:
     message = (service.users().messages().send(userId=user_id, body=message)
                .execute())
-    print 'Message Id: %s' % message['id']
+    print ('Message Id: %s' % message['id'])
     return message
   except errors.HttpError, error:
-    print 'An error occurred: %s' % error
+    print ('An error occurred: %s' % error)
 
 
 def CreateMessage(sender, to, subject, message_text):
